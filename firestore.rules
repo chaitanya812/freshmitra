@@ -1,0 +1,46 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Product catalogue is readable by the app. Only trusted admins should
+    // write products; add an admin custom claim before enabling admin tooling.
+    match /products/{productId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Group-buy listings are public. The creator can edit or delete their own
+    // group while it is collecting.
+    match /groupBuys/{groupId} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if request.auth != null
+        && resource.data.createdBy == request.auth.uid
+        && resource.data.status == 'Collecting';
+    }
+
+    // A user can only create/read their own membership records.
+    match /groupMemberships/{membershipId} {
+      allow read: if request.auth != null
+        && resource.data.userId == request.auth.uid;
+      allow create: if request.auth != null
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.groupId is string
+        && request.resource.data.quantity is number
+        && request.resource.data.quantity > 0;
+      allow update, delete: if request.auth != null
+        && resource.data.userId == request.auth.uid;
+    }
+
+    // User profile and order documents are private to their owner.
+    match /users/{userId} {
+      allow read, create, update, delete: if request.auth != null
+        && request.auth.uid == userId;
+
+      match /orders/{orderId} {
+        allow read, create, update, delete: if request.auth != null
+          && request.auth.uid == userId;
+      }
+    }
+  }
+}

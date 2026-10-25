@@ -1,0 +1,19 @@
+{
+  "name": "Freshmitra — Buy Together. Save More.",
+  "short_name": "Freshmitra",
+  "description": "Join your neighbourhood to get fresh groceries at group-buy prices.",
+  "lang": "en-IN",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F8FAFC",
+  "theme_color": "#0F766E",
+  "icons": [
+    {
+      "src": "/icons/freshmitra.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

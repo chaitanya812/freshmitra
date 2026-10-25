@@ -1,0 +1,165 @@
+.app-bg {
+  min-height: 100dvh;
+}
+
+.app-frame {
+  padding-bottom: calc(40px + env(safe-area-inset-bottom));
+}
+
+.bottom-nav {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.splash-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #f8fafc;
+  animation: splash-in 220ms ease-out both;
+}
+
+.splash-screen .brand {
+  font-size: 32px;
+}
+
+.splash-screen .brand-mark {
+  width: 52px;
+  height: 52px;
+  border-radius: 17px;
+}
+
+.splash-screen p {
+  margin: 0;
+  color: #64748b;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.splash-loader {
+  width: 32px;
+  height: 3px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #d9eeea;
+}
+
+.splash-loader::after {
+  display: block;
+  width: 50%;
+  height: 100%;
+  border-radius: inherit;
+  background: #0f766e;
+  content: "";
+  animation: splash-progress 750ms ease-in-out infinite;
+}
+
+.install-banner {
+  position: fixed;
+  right: max(20px, calc((100vw - 1180px) / 2));
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 258px;
+  padding: 12px 14px;
+  border: 1px solid #d8e9e4;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 12px 36px #0f172a1c;
+  color: #0f766e;
+  text-align: left;
+}
+
+.install-banner span {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+
+.install-banner b {
+  color: #0f172a;
+  font-size: 12px;
+}
+
+.install-banner small {
+  color: #64748b;
+  font-size: 10px;
+}
+
+.deal-image-wrap {
+  cursor: pointer;
+}
+
+.deal-card {
+  overflow: hidden;
+}
+
+.product-select-grid {
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+}
+
+button,
+.category-tile,
+.big-category,
+.deal-card {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (max-width: 600px) {
+  .app-frame {
+    min-height: 100dvh;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+
+  .bottom-nav {
+    padding-bottom: calc(5px + env(safe-area-inset-bottom));
+  }
+
+  .install-banner {
+    right: 16px;
+    bottom: calc(86px + env(safe-area-inset-bottom));
+    left: 16px;
+    min-width: 0;
+  }
+
+  .splash-screen .brand {
+    font-size: 29px;
+  }
+}
+
+@keyframes splash-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes splash-progress {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(200%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
