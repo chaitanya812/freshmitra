@@ -1,5 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { createGroupRecord, fetchProducts, joinGroupRecord, firebaseConfigured } from "./lib/dataService";
+import {
+  createGroupRecord, fetchCatalog, fetchUserData, joinGroupRecord, saveUserPreferences,
+  saveUserProfile, updateUserOrder, firebaseConfigured
+} from "./lib/dataService";
+import {
+  auth, ensureAnonymousSession, onAuthStateChanged, registerAccount, signInAccount,
+  signOutAccount, updateAccountProfile
+} from "./lib/firebase";
 import {
   Search, MapPin, ChevronDown, Bell, Leaf, Users, Clock3, ArrowRight,
   Home, LayoutGrid, ShoppingBasket, UserRound, Plus, Minus, Star,
@@ -24,6 +31,28 @@ const categories = [
   { name: "Eggs", emoji: "🥚", tint: "#FFF7D6" }, { name: "Dairy", emoji: "🥛", tint: "#E7F1FF" },
   { name: "Rice & Oil", emoji: "🌾", tint: "#F3F0D9" }, { name: "Daily Essentials", emoji: "🧺", tint: "#E9F2F0" }
 ];
+const normalizeDeal = (product, index) => {
+  const retail = Number(product.retailPrice || 0);
+  const group = Number(product.groupPrice || 0);
+  return {
+    id: product.id,
+    name: product.name || product.productName || "Fresh product",
+    local: product.description || "Fresh from a local vendor",
+    category: product.category || "Daily Essentials",
+    unit: product.unit || "kg",
+    retail,
+    group,
+    saved: Math.max(0, retail - group),
+    joined: Number(product.joinedQuantity || 0),
+    target: Math.max(1, Number(product.targetQuantity || 50)),
+    hours: Number(product.hoursLeft || 4),
+    mins: Number(product.minutesLeft || 0),
+    image: product.imageEmoji || "🧺",
+    color: product.color || ["#E8F5E9", "#FFF0E5", "#FFF7D6", "#FCE7E7"][index % 4],
+    dealer: product.dealerName || "Freshmitra Verified Vendor",
+    rating: String(product.dealerRating || "New"),
+  };
+};
 const money = n => "₹" + Number(n).toLocaleString("en-IN");
 const readLocalState = (key, fallback) => {
   try {
@@ -102,6 +131,108 @@ function CreateGroup({ onBack, onCreate }) {
     </div>
   </div>;
 }
+function SignPage({ onBack, onContinue, connected }) {
+  const [mode, setMode] = useState("signup");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async event => {
+    event.preventDefault();
+    setError("");
+    if (!email.includes("@")) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    if (password.length < 6) {
+      setError("Use at least 6 characters for your password.");
+      return;
+    }
+    if (mode === "signup" && !name.trim()) {
+      setError("Enter your name to create a profile.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await onContinue({
+        name: name.trim() || email.split("@")[0],
+        email: email.trim(),
+        password,
+        mode,
+      });
+    } catch (submitError) {
+      const messages = {
+        "auth/email-already-in-use": "That email already has an account. Choose Sign in instead.",
+        "auth/invalid-credential": "The email or password is incorrect.",
+        "auth/weak-password": "Choose a stronger password with at least 6 characters.",
+        "auth/network-request-failed": "Could not connect. Check your internet connection and try again.",
+        "auth/operation-not-allowed": "Email/password sign-in is not enabled in Firebase Authentication.",
+        "auth/credential-already-in-use": "That email already has an account. Sign in to link it.",
+      };
+      setError(messages[submitError.code] || submitError.message || "Could not sign in. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <section className="page-shell sign-page">
+    <button className="back-button sign-back" onClick={onBack}><ArrowRight size={16}/> Back</button>
+    <div className="sign-card">
+      <Brand/>
+      <span className="eyebrow">YOUR NEIGHBOURHOOD, IN YOUR BASKET</span>
+      <h1>{mode === "signup" ? "Join Freshmitra" : "Welcome back"}</h1>
+      <p className="sign-intro">Save on fresh essentials by shopping together with your community.</p>
+      <div className="sign-mode-switch">
+        <button className={mode === "signup" ? "selected" : ""} onClick={() => { setMode("signup"); setError(""); }}>Create account</button>
+        <button className={mode === "signin" ? "selected" : ""} onClick={() => { setMode("signin"); setError(""); }}>Sign in</button>
+      </div>
+      <form onSubmit={submit}>
+        {mode === "signup" && <label>Your name<input autoComplete="name" value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Ananya Rao" required/></label>}
+        <label>Email address<input type="email" autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} placeholder="you@example.com" required/></label>
+        <label>Password<input type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} value={password} onChange={event => setPassword(event.target.value)} placeholder="At least 6 characters" minLength={6} required/></label>
+        {error && <p className="sign-error" role="alert">{error}</p>}
+        <button className="primary-button full" type="submit" disabled={busy}>{busy ? "Please wait…" : mode === "signup" ? (connected ? "Create account" : "Create demo account") : (connected ? "Sign in" : "Continue in demo")} <ArrowRight size={17}/></button>
+      </form>
+      <p className="demo-disclaimer"><ShieldCheck size={16}/>{connected ? "Secure sign-in powered by Firebase Authentication. Your profile and activity sync to your account." : "Demo only: account details stay in this browser. Real authentication is not connected."}</p>
+      <button className="guest-button" onClick={onBack}>Continue as a guest</button>
+    </div>
+  </section>;
+}
+function EditProfileModal({ profile, onClose, onSave }) {
+  const [name, setName] = useState(profile.name);
+  const [email, setEmail] = useState(profile.email);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async event => {
+    event.preventDefault();
+    if (!name.trim() || !email.includes("@")) {
+      setError("Enter a name and a valid email address.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      await onSave({ name: name.trim(), email: email.trim() });
+    } catch (saveError) {
+      setError(saveError.code === "auth/requires-recent-login"
+        ? "Sign out and sign in again before changing your email address."
+        : saveError.message || "Could not update your profile.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <div className="modal-backdrop" onClick={onClose}><section className="simple-modal edit-profile-modal" onClick={event => event.stopPropagation()}>
+    <button className="modal-close" onClick={onClose} aria-label="Close"><X size={19}/></button>
+    <h2>Edit profile</h2>
+    <p>Update the name and email on your Freshmitra account.</p>
+    <form onSubmit={submit}>
+      <label>Your name<input value={name} onChange={event => setName(event.target.value)} required/></label>
+      <label>Email address<input type="email" value={email} onChange={event => setEmail(event.target.value)} required/></label>
+      {error&&<p className="sign-error" role="alert">{error}</p>}
+      <button className="primary-button full" type="submit" disabled={busy}>{busy ? "Saving…" : "Save changes"} <CheckCircle2 size={17}/></button>
+    </form>
+  </section></div>;
+}
 function App() {
   const [showSplash,setShowSplash] = useState(() => {
     try {
@@ -116,18 +247,22 @@ function App() {
   const [search,setSearch] = useState("");
   const [selected,setSelected] = useState(null);
   const [deals,setDeals] = useState(initialDeals);
-  const [wishes,setWishes] = useState(() => readLocalState("freshmitra-wishes", []));
+  const [wishes,setWishes] = useState(() => firebaseConfigured ? [] : readLocalState("freshmitra-wishes", []));
+  const [profile,setProfile] = useState(() => firebaseConfigured ? null : readLocalState("freshmitra-profile", null));
   const [activeTab,setActiveTab] = useState("Active Groups");
-  const [orders,setOrders] = useState(() => readLocalState("freshmitra-orders", []));
+  const [orders,setOrders] = useState(() => firebaseConfigured ? [] : readLocalState("freshmitra-orders", []));
+  const [firebaseUser,setFirebaseUser] = useState(null);
+  const [firebaseReady,setFirebaseReady] = useState(!firebaseConfigured);
   const [toast,setToast] = useState("");
   const [showCreate,setShowCreate] = useState(false);
   const [showNotifications,setShowNotifications] = useState(false);
   const [profileMenu,setProfileMenu] = useState("");
   const [showSearch,setShowSearch] = useState(false);
-  const [location,setLocation] = useState(() => readLocalState("freshmitra-location", "Kukatpally, Hyderabad"));
+  const [location,setLocation] = useState(() => firebaseConfigured ? "Kukatpally, Hyderabad" : readLocalState("freshmitra-location", "Kukatpally, Hyderabad"));
   const [showLocation,setShowLocation] = useState(false);
   const [categoryView,setCategoryView] = useState("");
   const [showAll,setShowAll] = useState(false);
+  const [savedOnly,setSavedOnly] = useState(false);
   const [installPrompt,setInstallPrompt] = useState(null);
 
   const notify = message => { setToast(message); window.setTimeout(()=>setToast(""),2800); };
@@ -141,18 +276,85 @@ function App() {
         console.error("Could not save splash state:", error);
       }
       setShowSplash(false);
-    }, 900);
+    }, 1000);
     return () => window.clearTimeout(timeout);
   }, [showSplash]);
   useEffect(() => {
+    if (firebaseConfigured || !firebaseReady) return;
     writeLocalState("freshmitra-orders", orders);
-  }, [orders]);
+  }, [firebaseReady, orders]);
   useEffect(() => {
+    if (firebaseConfigured || !firebaseReady) return;
     writeLocalState("freshmitra-wishes", wishes);
-  }, [wishes]);
+  }, [firebaseReady, wishes]);
   useEffect(() => {
+    if (firebaseConfigured || !firebaseReady) return;
+    writeLocalState("freshmitra-profile", profile);
+  }, [firebaseReady, profile]);
+  useEffect(() => {
+    if (firebaseConfigured || !firebaseReady) return;
     writeLocalState("freshmitra-location", location);
-  }, [location]);
+  }, [firebaseReady, location]);
+  useEffect(() => {
+    if (!firebaseConfigured || !auth) return undefined;
+    let active = true;
+    let creatingGuestSession = false;
+    const unsubscribe = onAuthStateChanged(auth, user => {
+      if (!active) return;
+      if (!user) {
+        setFirebaseUser(null);
+        setFirebaseReady(false);
+        if (!creatingGuestSession) {
+          creatingGuestSession = true;
+          ensureAnonymousSession().catch(error => {
+            if (active) {
+              console.error("Freshmitra guest authentication failed:", error);
+              setToast("Could not connect to Firebase Authentication.");
+              setFirebaseReady(true);
+            }
+          }).finally(() => {
+            creatingGuestSession = false;
+          });
+        }
+        return;
+      }
+      setFirebaseUser(user);
+      setFirebaseReady(false);
+      fetchUserData(user.uid).then(data => {
+        if (!active || auth.currentUser?.uid !== user.uid) return;
+        setProfile(data.profile || (!user.isAnonymous && user.email
+          ? { name: user.displayName || user.email.split("@")[0], email: user.email }
+          : null));
+        setOrders(data.orders);
+        setWishes(data.wishes);
+        setLocation(data.location);
+        setFirebaseReady(true);
+      }).catch(error => {
+        if (!active || auth.currentUser?.uid !== user.uid) return;
+        console.error("Freshmitra account data could not be loaded:", error);
+        setToast("Could not load your Firebase profile. Check Firestore rules.");
+        setFirebaseReady(true);
+      });
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
+  useEffect(() => {
+    if (!firebaseConfigured || !firebaseReady || !firebaseUser) return;
+    saveUserPreferences(firebaseUser.uid, { location, wishes }).catch(error => {
+      console.error("Freshmitra preferences could not be saved:", error);
+      setToast("Could not save your Firebase preferences. Check Firestore rules.");
+    });
+  }, [firebaseReady, firebaseUser, location, wishes]);
+  useEffect(() => {
+    if (!firebaseConfigured || !firebaseReady || !firebaseUser || !profile || firebaseUser.isAnonymous) return;
+    saveUserProfile(firebaseUser.uid, profile).catch(error => {
+      console.error("Freshmitra profile could not be saved:", error);
+      setToast("Could not save your Firebase profile. Check Firestore rules.");
+    });
+  }, [firebaseReady, firebaseUser, profile]);
   useEffect(() => {
     const handleInstallPrompt = event => {
       event.preventDefault();
@@ -176,37 +378,31 @@ function App() {
   useEffect(() => {
     let cancelled = false;
     if (!firebaseConfigured) return () => { cancelled = true; };
-    fetchProducts().then(remote => {
-      if (cancelled || !remote.length) return;
-      const normalized = remote.filter(p => p.active !== false).map((p, index) => ({
-        id: p.id,
-        name: p.name || "Fresh product",
-        local: p.description || "Fresh from a local vendor",
-        category: p.category || "Daily Essentials",
-        unit: p.unit || "kg",
-        retail: Number(p.retailPrice || 0),
-        group: Number(p.groupPrice || 0),
-        saved: Math.max(0, Number(p.retailPrice || 0) - Number(p.groupPrice || 0)),
-        joined: Number(p.joinedQuantity || 0),
-        target: Math.max(1, Number(p.targetQuantity || 50)),
-        hours: Number(p.hoursLeft || 4),
-        mins: Number(p.minutesLeft || 0),
-        image: p.imageEmoji || "🧺",
-        color: p.color || ["#E8F5E9", "#FFF0E5", "#FFF7D6", "#FCE7E7"][index % 4],
-        dealer: p.dealerName || "Freshmitra Verified Vendor",
-        rating: String(p.dealerRating || "New")
-      }));
-      setDeals(normalized);
-    }).catch(err => console.error("Freshmitra product load failed:", err));
+    fetchCatalog().then(remote => {
+      if (cancelled) return;
+      const catalog = [
+        ...remote.products.filter(product => product.active !== false),
+        ...remote.groups,
+      ].map(normalizeDeal);
+      if (catalog.length) setDeals(catalog);
+    }).catch(err => {
+      console.error("Freshmitra Firebase catalogue load failed:", err);
+      if (!cancelled) setToast("Could not load Firebase products. Check Firestore rules.");
+    });
     return () => { cancelled = true; };
   }, []);
 
-  const visibleDeals = useMemo(()=>deals.filter(d=>(filter==="All"||filter==="Today's Deals"||d.category===filter)&&d.name.toLowerCase().includes(search.toLowerCase())),[deals,filter,search]);
+  const visibleDeals = useMemo(()=>deals.filter(d=>
+    (filter==="All"||filter==="Today's Deals"||d.category===filter)
+    && (filter!=="Today's Deals"||d.hours<3)
+    && (!savedOnly||wishes.includes(d.id))
+    && [d.name,d.category,d.local,d.dealer].some(value=>value.toLowerCase().includes(search.toLowerCase()))
+  ),[deals,filter,search,savedOnly,wishes]);
   const joinDeal = d => setSelected(d);
   const confirmJoin = async (deal,qty,slot) => {
     try {
       const result = await joinGroupRecord({ groupId: deal.id, deal, quantity: qty, slot });
-      setOrders(old=>[{id:result.id || Date.now(),deal,qty,slot,status:"Collecting",type:"group"},...old]);
+      setOrders(old=>[{id:result.orderId || result.id || Date.now(),deal,qty,slot,status:"Collecting",type:"group",mode:result.mode},...old]);
       setDeals(old=>old.map(d=>d.id===deal.id?{...d,joined:Math.min(d.target,d.joined+qty)}:d));
       setSelected(null); setPage("My Groups"); setActiveTab("Active Groups");
       notify(result.mode === "firebase" ? `Joined ${deal.name} group and saved to Firebase.` : `You're in! Joined ${deal.name} group.`);
@@ -221,7 +417,8 @@ function App() {
     try {
       const result = await createGroupRecord({ ...data, deal });
       const savedDeal = { ...deal, id: result.id || deal.id, target: Number(data.qty) };
-      setOrders(old=>[{id:result.id || Date.now(),deal:savedDeal,qty:Number(data.qty),slot:`Closes in ${data.closing}`,status:"Collecting",type:"created",area:data.area},...old]);
+      setDeals(old=>[savedDeal,...old.filter(item=>item.id!==savedDeal.id)]);
+      setOrders(old=>[{id:result.orderId || result.id || Date.now(),deal:savedDeal,qty:Number(data.qty),slot:`Closes in ${data.closing}`,status:"Collecting",type:"created",area:data.area,mode:result.mode},...old]);
       setShowCreate(false);setPage("My Groups");setActiveTab("Active Groups");
       notify(result.mode === "firebase" ? "Your group is live and saved to Firebase!" : "Your group is live! Invite your neighbours.");
     } catch (error) {
@@ -229,8 +426,74 @@ function App() {
       notify("Could not create group in Firebase. Check setup and Firestore rules.");
     }
   };
-  const selectCategory = name => { setFilter(name); setCategoryView(name); setPage("Home"); setShowAll(true); };
-  const navTo = name => {setPage(name);setShowCreate(false);setProfileMenu("");setCategoryView("");};
+  const selectCategory = name => { setFilter(name); setCategoryView(name); setPage("Home"); setShowAll(true); setSavedOnly(false); };
+  const navTo = name => {setPage(name);setShowCreate(false);setProfileMenu("");setCategoryView("");setSavedOnly(false);};
+  const openSavedDeals = () => {
+    setPage("Home");
+    setFilter("All");
+    setSearch("");
+    setShowSearch(false);
+    setCategoryView("");
+    setSavedOnly(true);
+    setShowAll(true);
+    setProfileMenu("");
+    window.setTimeout(() => document.getElementById("live-deals")?.scrollIntoView({ behavior: "smooth" }), 0);
+  };
+  const continueAccount = async details => {
+    if (!firebaseConfigured) {
+      setProfile({ name: details.name, email: details.email });
+      setPage("Profile");
+      notify(`Welcome to Freshmitra, ${details.name}.`);
+      return;
+    }
+    const user = details.mode === "signup"
+      ? await registerAccount(details)
+      : await signInAccount(details);
+    const accountProfile = {
+      name: user.displayName || details.name,
+      email: user.email || details.email,
+    };
+    if (details.mode === "signup") await saveUserProfile(user.uid, accountProfile);
+    setProfile(accountProfile);
+    setPage("Profile");
+    notify(`Welcome to Freshmitra, ${accountProfile.name}.`);
+  };
+  const updateAccountDetails = async details => {
+    if (firebaseConfigured && firebaseUser && !firebaseUser.isAnonymous) {
+      await updateAccountProfile(details);
+      await saveUserProfile(firebaseUser.uid, details);
+    }
+    setProfile(details);
+    setProfileMenu("");
+    notify("Your profile has been updated.");
+  };
+  const signOutCurrentUser = async () => {
+    if (firebaseConfigured && firebaseUser && !firebaseUser.isAnonymous) {
+      try {
+        await signOutAccount();
+        setPage("Sign in");
+        notify("You have been signed out.");
+      } catch (error) {
+        console.error("Freshmitra sign-out failed:", error);
+        notify("Could not sign out. Please try again.");
+      }
+      return;
+    }
+    setProfile(null);
+    setPage("Sign in");
+    notify("You have been signed out of this demo.");
+  };
+  const completeOrder = async order => {
+    try {
+      if (firebaseConfigured && firebaseUser && order.mode === "firebase") {
+        await updateUserOrder(firebaseUser.uid, order.id, { status: "Delivered" });
+      }
+      setOrders(old=>old.map(item=>item.id===order.id?{...item,status:"Delivered"}:item));
+    } catch (error) {
+      console.error("Freshmitra order status could not be saved:", error);
+      notify("Could not update the order in Firebase.");
+    }
+  };
   const navTitle = page === "Home" ? "Good things, for less." : page;
 
   return <div className="app-bg">
@@ -250,26 +513,29 @@ function App() {
           <section className="trust-strip"><div><span className="trust-icon"><Truck size={17}/></span><span><b>Neighbourhood delivery</b><small>Convenient time slots</small></span></div><div><span className="trust-icon"><ShieldCheck size={17}/></span><span><b>Verified vendors</b><small>Freshness you can trust</small></span></div><div><span className="trust-icon"><Users size={17}/></span><span><b>Better together</b><small>Unlock group pricing</small></span></div></section>
           <section className="category-section"><div className="section-heading"><div><span className="eyebrow">SHOP BY CATEGORY</span><h2>What do you need?</h2></div><button className="text-link" onClick={()=>navTo("Categories")}>See all <ArrowRight size={15}/></button></div><div className="category-scroller">{categories.slice(0,6).map(c=><button key={c.name} className="category-tile" onClick={()=>selectCategory(c.name)}><span className="category-emoji" style={{background:c.tint}}>{c.emoji}</span><span>{c.name}</span></button>)}</div></section>
           <section className="deals-section" id="live-deals"><div className="section-heading deals-heading"><div><span className="eyebrow"><span className="live-dot"/> LIVE GROUP BUYS</span><h2>Deals near you <span className="live-count">{visibleDeals.length}</span></h2><p>Prices drop when the community joins in. {firebaseConfigured ? "Connected to Firebase" : "Demo mode"}</p></div><button className="filter-button" onClick={()=>setShowAll(!showAll)}><SlidersHorizontal size={16}/>{showAll?"Less":"View all"}</button></div>
-            <div className="filter-chips">{["All","Vegetables","Chicken","Mutton","Eggs","Today's Deals"].map(c=><button key={c} onClick={()=>{setFilter(c);setCategoryView("");}} className={filter===c?"chip selected":"chip"}>{c==="Today's Deals"&&<Flame size={13}/ >}{c}</button>)}</div>
+            <div className="filter-chips">{["All","Vegetables","Chicken","Mutton","Eggs","Today's Deals"].map(c=><button key={c} onClick={()=>{setFilter(c);setCategoryView("");setSavedOnly(false);}} className={filter===c&&!savedOnly?"chip selected":"chip"}>{c==="Today's Deals"&&<Flame size={13}/ >}{c}</button>)}</div>
+            {savedOnly&&<div className="filter-notice">Your saved deals <button onClick={()=>setSavedOnly(false)}>Show all deals <X size={13}/></button></div>}
             {categoryView&&<div className="filter-notice">Showing {categoryView.toLowerCase()} deals <button onClick={()=>{setFilter("All");setCategoryView("");}}>Clear filter <X size={13}/></button></div>}
             <div className="deal-grid">{(showAll?visibleDeals:visibleDeals.slice(0,4)).map(d=><DealCard key={d.id} deal={d} onJoin={joinDeal} onOpen={joinDeal} wished={wishes.includes(d.id)} onWish={toggleWish}/>)}</div>
-            {visibleDeals.length===0&&<div className="empty-state"><span>🔎</span><h3>No deals found</h3><p>Try a different search or category.</p><button className="primary-button" onClick={()=>{setSearch("");setFilter("All")}}>Show all deals</button></div>}
-            <div className="create-prompt"><div className="prompt-icon">🤝</div><div><strong>Can't find your group deal?</strong><p>Start a group order for your community.</p></div><button onClick={()=>setShowCreate(true)}>Create group <Plus size={15}/></button></div>
+            {visibleDeals.length===0&&<div className="empty-state"><span>🔎</span><h3>No deals found</h3><p>Try a different search or category.</p><button className="primary-button" onClick={()=>{setSearch("");setFilter("All");setSavedOnly(false);setCategoryView("");}}>Show all deals</button></div>}
+            {!savedOnly&&<div className="create-prompt"><div className="prompt-icon">🤝</div><div><strong>Can't find your group deal?</strong><p>Start a group order for your community.</p></div><button onClick={()=>setShowCreate(true)}>Create group <Plus size={15}/></button></div>}
           </section>
         </>}
         {page==="Home"&&showCreate&&<CreateGroup onBack={()=>setShowCreate(false)} onCreate={createGroup}/>}
-        {page==="Categories"&&<section className="page-shell"><div className="page-heading"><span className="eyebrow">FRESH FINDS, FAIR PRICES</span><h1>Shop by category</h1><p>Everyday essentials, better when bought together.</p></div><div className="all-category-grid">{categories.map((c,i)=><button key={c.name} className="big-category" onClick={()=>selectCategory(c.name)}><span className="big-category-art" style={{background:c.tint}}>{c.emoji}</span><span><b>{c.name}</b><small>{[12,8,6,4,5,7,9,11][i]} live group deals</small></span><ChevronRight size={19}/></button>)}</div><div className="category-bottom-note"><Sprout size={20}/><div><strong>Freshness from trusted local vendors</strong><p>Know your seller. See the savings. Buy together.</p></div></div></section>}
+        {page==="Categories"&&<section className="page-shell"><div className="page-heading"><span className="eyebrow">FRESH FINDS, FAIR PRICES</span><h1>Shop by category</h1><p>Everyday essentials, better when bought together.</p></div><div className="all-category-grid">{categories.map(c=><button key={c.name} className="big-category" onClick={()=>selectCategory(c.name)}><span className="big-category-art" style={{background:c.tint}}>{c.emoji}</span><span><b>{c.name}</b><small>{deals.filter(deal=>deal.category===c.name).length} live deals</small></span><ChevronRight size={19}/></button>)}</div><div className="category-bottom-note"><Sprout size={20}/><div><strong>Freshness from trusted local vendors</strong><p>Know your seller. See the savings. Buy together.</p></div></div></section>}
         {page==="My Groups"&&<section className="page-shell"><div className="page-heading orders-heading"><div><span className="eyebrow">YOUR COMMUNITY BASKET</span><h1>My groups & orders</h1><p>Follow your group buys from deal to doorstep.</p></div><button className="primary-button compact" onClick={()=>{setShowCreate(true);setPage("Home")}}><Plus size={16}/> Create group</button></div><div className="tabs"><button className={activeTab==="Active Groups"?"tab active":"tab"} onClick={()=>setActiveTab("Active Groups")}>Active groups <span>{orders.filter(o=>o.status!=="Delivered").length}</span></button><button className={activeTab==="Past Orders"?"tab active":"tab"} onClick={()=>setActiveTab("Past Orders")}>Past orders</button></div>
-          <div className="orders-list">{orders.filter(o=>activeTab==="Active Groups"?o.status!=="Delivered":o.status==="Delivered").map(o=><article className="order-card" key={o.id}><div className="order-product-art" style={{background:o.deal.color}}>{o.deal.image}</div><div className="order-main"><div className="order-topline"><span className={`status-tag ${o.status.toLowerCase().replaceAll(" ","-")}`}>{o.status==="Collecting"&&<span className="tiny-live"/>}{o.status}</span><span className="order-id">FM-{String(o.id).slice(-5)}</span></div><h3>{o.deal.name}</h3><p>{o.qty} {o.deal.unit} · {o.slot}</p><div className="order-price">{money(o.deal.group*o.qty)} <span>· Saved {money(o.deal.saved*o.qty)}</span></div><div className="order-actions">{o.status==="Collecting"?<button className="outline-button" onClick={()=>notify("Invite link copied! Share it with your neighbours.")}>Invite neighbours <Users size={14}/></button>:o.status==="Delivered"?<button className="outline-button" onClick={()=>{setSelected(o.deal);setPage("Home")}}>Reorder <RotateCcw size={14}/></button>:<button className="outline-button" onClick={()=>notify("Tracking updates will appear here.")}>Track order <Truck size={14}/></button>}<button className="plain-button" onClick={()=>{setSelected(o.deal);setPage("Home")}}>View deal <ArrowRight size={14}/></button></div></div></article>)}
-          {activeTab==="Past Orders"&&<div className="empty-state"><span>🧺</span><h3>Your past orders will appear here</h3><p>Complete a group buy and it will show up here.</p><button className="primary-button" onClick={()=>navTo("Home")}>Explore deals</button></div>}
-          {activeTab==="Active Groups"&&orders.filter(o=>o.status!=="Delivered").length===0&&<div className="empty-state"><span>🤝</span><h3>Your group journey starts here</h3><p>Join a live deal or create a group with your neighbours.</p><button className="primary-button" onClick={()=>navTo("Home")}>Explore live deals <ArrowRight size={16}/></button></div>}</div>
+          <div className="orders-list">{orders.filter(o=>activeTab==="Active Groups"?o.status!=="Delivered":o.status==="Delivered").map(o=><article className="order-card" key={o.id}><div className="order-product-art" style={{background:o.deal.color}}>{o.deal.image}</div><div className="order-main"><div className="order-topline"><span className={`status-tag ${o.status.toLowerCase().replaceAll(" ","-")}`}>{o.status==="Collecting"&&<span className="tiny-live"/>}{o.status}</span><span className="order-id">FM-{String(o.id).slice(-5)}</span></div><h3>{o.deal.name}</h3><p>{o.qty} {o.deal.unit} · {o.slot}</p><div className="order-price">{money(o.deal.group*o.qty)} <span>· Saved {money(o.deal.saved*o.qty)}</span></div><div className="order-actions">{o.status==="Collecting"&&o.mode==="demo"?<button className="outline-button" onClick={()=>completeOrder(o)}>Complete demo order <CheckCircle2 size={14}/></button>:o.status==="Collecting"?<button className="outline-button" onClick={()=>notify("Invite link copied! Share it with your neighbours.")}>Invite neighbours <Users size={14}/></button>:o.status==="Delivered"?<button className="outline-button" onClick={()=>{setSelected(o.deal);setPage("Home")}}>Reorder <RotateCcw size={14}/></button>:<button className="outline-button" onClick={()=>notify("Tracking updates will appear here.")}>Track order <Truck size={14}/></button>}<button className="plain-button" onClick={()=>{setSelected(o.deal);setPage("Home")}}>View deal <ArrowRight size={14}/></button></div></div></article>)}
+          {orders.filter(o=>activeTab==="Active Groups"?o.status!=="Delivered":o.status==="Delivered").length===0&&<div className="empty-state"><span>{activeTab==="Past Orders"?"🧺":"🤝"}</span><h3>{activeTab==="Past Orders"?"Your past orders will appear here":"Your group journey starts here"}</h3><p>{activeTab==="Past Orders"?"Complete a demo group buy and it will show up here.":"Join a live deal or create a group with your neighbours."}</p><button className="primary-button" onClick={()=>navTo("Home")}>Explore deals <ArrowRight size={16}/></button></div>}
+          </div>
         </section>}
-        {page==="Profile"&&<section className="page-shell profile-page"><div className="page-heading"><span className="eyebrow">YOUR FRESHMITRA ACCOUNT</span><h1>My profile</h1><p>Manage your account and preferences.</p></div><div className="profile-card"><div className="profile-avatar">CR</div><div className="profile-details"><h2>Chaitanya Reddy</h2><p>chaitanya@example.com</p><span className="member-pill"><Sprout size={13}/> Freshmitra member</span></div><button className="edit-profile" onClick={()=>notify("Profile editing will be available soon.")}>Edit</button></div><div className="profile-menu">{[{name:"My Addresses",desc:"Manage delivery locations",icon:MapPinned},{name:"My Orders",desc:"Your group buys and orders",icon:ShoppingBasket},{name:"Saved Groups",desc:"Deals you bookmarked",icon:Heart},{name:"Payments",desc:"Payment methods and refunds",icon:CreditCard},{name:"Help & Support",desc:"We're here to help",icon:Headphones}].map(({name,desc,icon:Icon})=><button className="profile-menu-row" key={name} onClick={()=>name==="My Orders"?navTo("My Groups"):name==="Saved Groups"?notify(wishes.length?`${wishes.length} saved deal(s) — visit Home to open them.`:"You haven't saved any deals yet."):setProfileMenu(name)}><span className="menu-icon"><Icon size={19}/></span><span className="menu-copy"><b>{name}</b><small>{desc}</small></span><ChevronRight size={18}/></button>)}</div><button className="logout-button" onClick={()=>notify("You're safely signed in on this demo.")}><LogOut size={18}/> Log out</button><div className="profile-footer"><Brand small/><span>Version 0.1.0 · Made for neighbourhoods in India</span></div></section>}
+        {page==="Sign in"&&<SignPage connected={firebaseConfigured} onBack={()=>setPage("Profile")} onContinue={continueAccount}/>}
+        {page==="Profile"&&<section className="page-shell profile-page"><div className="page-heading"><span className="eyebrow">YOUR FRESHMITRA ACCOUNT</span><h1>My profile</h1><p>Manage your account and preferences.</p></div><div className="profile-card"><div className="profile-avatar">{profile?profile.name.split(/\s+/).map(part=>part[0]).join("").slice(0,2).toUpperCase():"FM"}</div><div className="profile-details"><h2>{profile?.name||"Guest shopper"}</h2><p>{profile?.email||"Continue as a guest or create an account."}</p><span className="member-pill"><Sprout size={13}/> {profile?firebaseConfigured?"Firebase account":"Demo account":"Browsing as a guest"}</span></div>{profile?<button className="edit-profile" onClick={()=>setProfileMenu("Edit profile")}>Edit</button>:<button className="edit-profile" onClick={()=>setPage("Sign in")}>Sign in</button>}</div><div className="profile-menu">{[{name:"My Addresses",desc:"Manage delivery locations",icon:MapPinned},{name:"My Orders",desc:"Your group buys and orders",icon:ShoppingBasket},{name:"Saved Groups",desc:"Deals you bookmarked",icon:Heart},{name:"Payments",desc:"Payment methods and refunds",icon:CreditCard},{name:"Help & Support",desc:"We're here to help",icon:Headphones}].map(({name,desc,icon:Icon})=><button className="profile-menu-row" key={name} onClick={()=>name==="My Orders"?navTo("My Groups"):name==="Saved Groups"?openSavedDeals():name==="My Addresses"?(setShowLocation(true),notify("Choose a delivery area from the top of the page.")):setProfileMenu(name)}><span className="menu-icon"><Icon size={19}/></span><span className="menu-copy"><b>{name}</b><small>{desc}</small></span><ChevronRight size={18}/></button>)}</div>{profile&&<button className="logout-button" onClick={signOutCurrentUser}><LogOut size={18}/> Log out</button>}<div className="profile-footer"><Brand small/><span>Version 0.1.0 · Made for neighbourhoods in India</span></div></section>}
       </main>
-      {!showCreate&&<BottomNav page={page} setPage={navTo}/>}
+      {!showCreate&&page!=="Sign in"&&<BottomNav page={page} setPage={navTo}/>}
       {showCreate&&page!=="Home"&&null}
       <GroupModal deal={selected} onClose={()=>setSelected(null)} onConfirm={confirmJoin}/>
-      {profileMenu&&<div className="modal-backdrop" onClick={()=>setProfileMenu("")}><section className="simple-modal" onClick={e=>e.stopPropagation()}><button className="modal-close" onClick={()=>setProfileMenu("")}><X size={19}/></button><div className="simple-modal-icon"><CircleHelp size={26}/></div><h2>{profileMenu}</h2><p>This section will be connected when we add your account and backend services.</p><button className="primary-button full" onClick={()=>setProfileMenu("")}>Got it</button></section></div>}
+      {profileMenu==="Edit profile"&&profile&&<EditProfileModal profile={profile} onClose={()=>setProfileMenu("")} onSave={updateAccountDetails}/>}
+      {profileMenu&&profileMenu!=="Edit profile"&&<div className="modal-backdrop" onClick={()=>setProfileMenu("")}><section className="simple-modal" onClick={e=>e.stopPropagation()}><button className="modal-close" onClick={()=>setProfileMenu("")}><X size={19}/></button><div className="simple-modal-icon"><CircleHelp size={26}/></div><h2>{profileMenu}</h2><p>{profileMenu==="Payments"?"Payments are not enabled in this prototype. No payment details are collected or stored.":"For help, please contact your neighbourhood Freshmitra representative. Support messaging is not connected in this demo."}</p><button className="primary-button full" onClick={()=>setProfileMenu("")}>Got it</button></section></div>}
       {installPrompt&&<button className="install-banner" onClick={installApp}><Download size={17}/><span><b>Install Freshmitra</b><small>Add the app to your home screen</small></span><ArrowRight size={16}/></button>}
       {toast&&<div className="toast" role="status"><CheckCircle2 size={18}/>{toast}</div>}
       <footer className="desktop-footer"><Brand small/><span>Freshmitra · Buy Together. Save More.</span><span>Demo experience · Sample prices</span></footer>

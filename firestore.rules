@@ -13,8 +13,29 @@ service cloud.firestore {
     match /groupBuys/{groupId} {
       allow read: if true;
       allow create: if request.auth != null
-        && request.resource.data.createdBy == request.auth.uid;
-      allow update, delete: if request.auth != null
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.productName is string
+        && request.resource.data.productName.size() > 0
+        && request.resource.data.targetQuantity is number
+        && request.resource.data.targetQuantity > 0
+        && request.resource.data.targetQuantity <= 500
+        && request.resource.data.groupPrice is number
+        && request.resource.data.groupPrice >= 0
+        && request.resource.data.retailPrice is number
+        && request.resource.data.retailPrice >= request.resource.data.groupPrice
+        && request.resource.data.joinedQuantity == 0
+        && request.resource.data.status == 'Collecting';
+      allow update: if request.auth != null
+        && (
+          (resource.data.createdBy == request.auth.uid
+            && resource.data.status == 'Collecting')
+          || (resource.data.status == 'Collecting'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['joinedQuantity'])
+            && request.resource.data.joinedQuantity is number
+            && request.resource.data.joinedQuantity > resource.data.joinedQuantity
+            && request.resource.data.joinedQuantity <= resource.data.targetQuantity)
+        );
+      allow delete: if request.auth != null
         && resource.data.createdBy == request.auth.uid
         && resource.data.status == 'Collecting';
     }
@@ -27,7 +48,8 @@ service cloud.firestore {
         && request.resource.data.userId == request.auth.uid
         && request.resource.data.groupId is string
         && request.resource.data.quantity is number
-        && request.resource.data.quantity > 0;
+        && request.resource.data.quantity > 0
+        && request.resource.data.quantity <= 20;
       allow update, delete: if request.auth != null
         && resource.data.userId == request.auth.uid;
     }
